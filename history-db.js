@@ -163,7 +163,7 @@
       model: String(entry?.model || ""),
       zh: String(entry?.zh || ""),
       en: String(entry?.en || ""),
-      json: formatJson(entry?.json || "{}")
+      json: entry?.json ? formatJson(entry.json) : ""
     };
   }
 

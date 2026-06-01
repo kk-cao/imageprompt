@@ -7,12 +7,15 @@ const STORAGE_KEYS = {
   model: "ript_model",
   provider: "ript_provider",
   history: "ript_history",
-  historyLimit: "ript_history_limit"
+  historyLimit: "ript_history_limit",
+  outputFormats: "ript_output_formats"
 };
 
 const DEFAULT_API_URL = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL = "gpt-4o";
 const DEFAULT_HISTORY_LIMIT = 100;
+const OUTPUT_FORMATS = ["zh", "en", "json"];
+const DEFAULT_OUTPUT_FORMATS = [...OUTPUT_FORMATS];
 const CONNECTION_TEST_TIMEOUT_MS = 20000;
 const IMAGE_ANALYSIS_TIMEOUT_MS = 90000;
 const pendingRequests = new Map();
@@ -34,14 +37,24 @@ function setupContextMenu() {
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId !== MENU_ID || !tab?.id || !info.srcUrl) return;
 
-  await ensureContentScript(tab.id);
-  const clickPoint = await getLastImageContextPoint(tab.id);
+  let clickPoint = { x: 120, y: 120 };
+  try {
+    await ensureContentScript(tab.id);
+    clickPoint = await getLastImageContextPoint(tab.id);
 
-  await startReverseImageFlow({
-    tabId: tab.id,
-    srcUrl: info.srcUrl,
-    point: clickPoint
-  });
+    await startReverseImageFlow({
+      tabId: tab.id,
+      srcUrl: info.srcUrl,
+      point: clickPoint
+    });
+  } catch (error) {
+    await sendToTab(tab.id, {
+      type: "RIPT_SHOW_ERROR",
+      message: normalizeError(error),
+      imagePreview: info.srcUrl,
+      point: clickPoint
+    }).catch(() => {});
+  }
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -75,7 +88,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "RIPT_REWRITE_JSON_PROMPT") {
-    handleJsonRewrite(message)
+    handlePromptRewrite(message)
       .then((response) => sendResponse(response))
       .catch((error) => sendResponse({
         ok: false,
@@ -96,33 +109,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-async function handleJsonRewrite(message) {
-  const { apiKey, apiUrl, model } = await getApiSettings();
-  const currentJson = String(message.currentJson || "").trim();
+async function handlePromptRewrite(message) {
+  const { apiKey, apiUrl, model, outputFormats } = await getApiSettings();
+  const format = normalizePromptFormat(message.format);
+  const currentText = String(message.currentText || message.currentJson || "").trim();
   const rewriteTarget = String(message.rewriteTarget || "").trim();
 
   if (!apiKey || !apiUrl || !model) {
     throw new Error("请先绑定 API URL、API Key 和模型名称。");
   }
 
-  if (!currentJson || !rewriteTarget) {
-    throw new Error("当前 JSON 和调整目标都不能为空。");
+  if (!currentText || !rewriteTarget) {
+    throw new Error("当前提示词和调整目标都不能为空。");
   }
 
-  const rewritten = await rewriteJsonPrompt({
+  const rewritten = await rewritePromptText({
     apiKey,
     apiUrl,
     model,
-    currentJson,
+    format,
+    currentText,
     rewriteTarget
   });
-  const parsed = parseAIResponse(rewritten);
+  const text = format === "json"
+    ? normalizeRewrittenJson(rewritten)
+    : cleanupPlainText(rewritten);
 
   return {
     ok: true,
-    zh: parsed.zh,
-    en: parsed.en,
-    json: parsed.json
+    format,
+    text
   };
 }
 
@@ -135,7 +151,7 @@ async function startReverseImageFlow({ tabId, srcUrl, point }) {
     createdAt: Date.now()
   });
 
-  const { apiKey, apiUrl, model } = await getApiSettings();
+  const { apiKey, apiUrl, model, outputFormats } = await getApiSettings();
 
   if (!apiKey || !apiUrl || !model) {
     await sendToTab(tabId, {
@@ -155,7 +171,8 @@ async function startReverseImageFlow({ tabId, srcUrl, point }) {
     point,
     apiKey,
     apiUrl,
-    model
+    model,
+    outputFormats
   });
 }
 
@@ -164,6 +181,7 @@ async function handleBindingMessage(message, sender) {
   const apiUrl = String(message.apiUrl || "").trim();
   const apiKey = String(message.apiKey || "").trim();
   const model = String(message.model || DEFAULT_MODEL).trim();
+  const outputFormats = normalizeOutputFormats(message.outputFormats);
   if (!apiUrl || !apiKey || !model) {
     throw new Error("API URL、API Key 和模型名称都需要填写。");
   }
@@ -172,7 +190,8 @@ async function handleBindingMessage(message, sender) {
 
   await chrome.storage.sync.set({
     [STORAGE_KEYS.apiUrl]: workingEndpoint,
-    [STORAGE_KEYS.model]: model
+    [STORAGE_KEYS.model]: model,
+    [STORAGE_KEYS.outputFormats]: outputFormats
   });
   await chrome.storage.local.set({
     [STORAGE_KEYS.apiKey]: apiKey
@@ -211,7 +230,8 @@ async function handleBindingMessage(message, sender) {
     point: pending.point,
     apiKey,
     apiUrl: workingEndpoint,
-    model
+    model,
+    outputFormats
   });
 
   return { ok: true };
@@ -221,7 +241,8 @@ async function getApiSettings() {
   const syncSettings = await chrome.storage.sync.get([
     STORAGE_KEYS.apiKey,
     STORAGE_KEYS.apiUrl,
-    STORAGE_KEYS.model
+    STORAGE_KEYS.model,
+    STORAGE_KEYS.outputFormats
   ]);
   const localSettings = await chrome.storage.local.get(STORAGE_KEYS.apiKey);
   const legacySyncApiKey = syncSettings[STORAGE_KEYS.apiKey];
@@ -237,7 +258,8 @@ async function getApiSettings() {
   return {
     apiKey: localApiKey || legacySyncApiKey || "",
     apiUrl: syncSettings[STORAGE_KEYS.apiUrl] || "",
-    model: syncSettings[STORAGE_KEYS.model] || DEFAULT_MODEL
+    model: syncSettings[STORAGE_KEYS.model] || DEFAULT_MODEL,
+    outputFormats: normalizeOutputFormats(syncSettings[STORAGE_KEYS.outputFormats])
   };
 }
 
@@ -297,7 +319,7 @@ async function resolveWorkingEndpoint({ apiKey, endpoint, model, imageDataUrl, t
   throw lastError || new Error("API URL 不存在，请检查接口路径。");
 }
 
-async function analyzeImage({ tabId, requestId, srcUrl, point, apiKey, apiUrl, model }) {
+async function analyzeImage({ tabId, requestId, srcUrl, point, apiKey, apiUrl, model, outputFormats = DEFAULT_OUTPUT_FORMATS }) {
   let imagePreview = srcUrl;
   try {
     await sendProgress(tabId, point, 8, "准备读取图片", imagePreview);
@@ -310,7 +332,8 @@ async function analyzeImage({ tabId, requestId, srcUrl, point, apiKey, apiUrl, m
       apiKey,
       apiUrl,
       model,
-      imageDataUrl
+      imageDataUrl,
+      outputFormats
     });
 
     await sendProgress(tabId, point, 92, "正在整理结果", imagePreview);
@@ -391,7 +414,7 @@ async function saveHistoryItem({ srcUrl, model, result, imageDataUrl }) {
     model,
     zh: result?.zh || "",
     en: result?.en || "",
-    json: result?.json || "{}"
+    json: result?.json || ""
   };
 
   await saveHistoryWithFallback(item);
@@ -524,16 +547,18 @@ async function blobToBase64(blob) {
   return btoa(binary);
 }
 
-async function reverseImagePrompt({ apiKey, apiUrl, model, imageDataUrl }) {
+async function reverseImagePrompt({ apiKey, apiUrl, model, imageDataUrl, outputFormats }) {
   const endpoint = normalizeApiUrl(apiUrl);
   const mode = detectApiMode(endpoint);
+  const formats = normalizeOutputFormats(outputFormats);
 
   if (mode === "anthropic") {
     return callAnthropicMessages({
       apiKey,
       endpoint,
       model,
-      imageDataUrl
+      imageDataUrl,
+      outputFormats: formats
     });
   }
 
@@ -542,7 +567,8 @@ async function reverseImagePrompt({ apiKey, apiUrl, model, imageDataUrl }) {
       apiKey,
       endpoint,
       model,
-      imageDataUrl
+      imageDataUrl,
+      outputFormats: formats
     });
   }
 
@@ -553,44 +579,48 @@ async function reverseImagePrompt({ apiKey, apiUrl, model, imageDataUrl }) {
     apiKey,
     endpoint: chatEndpoint,
     model,
-    imageDataUrl
+    imageDataUrl,
+    outputFormats: formats
   });
 }
 
-async function rewriteJsonPrompt({ apiKey, apiUrl, model, currentJson, rewriteTarget }) {
+async function rewritePromptText({ apiKey, apiUrl, model, format, currentText, rewriteTarget }) {
   const endpoint = normalizeApiUrl(apiUrl);
   const mode = detectApiMode(endpoint);
 
   if (mode === "anthropic") {
-    return rewriteJsonWithAnthropicMessages({
+    return rewritePromptWithAnthropicMessages({
       apiKey,
       endpoint,
       model,
-      currentJson,
+      format,
+      currentText,
       rewriteTarget
     });
   }
 
   if (mode === "chat") {
-    return rewriteJsonWithChatCompletions({
+    return rewritePromptWithChatCompletions({
       apiKey,
       endpoint,
       model,
-      currentJson,
+      format,
+      currentText,
       rewriteTarget
     });
   }
 
-  return rewriteJsonWithResponses({
+  return rewritePromptWithResponses({
     apiKey,
     endpoint,
     model,
-    currentJson,
+    format,
+    currentText,
     rewriteTarget
   });
 }
 
-async function rewriteJsonWithResponses({ apiKey, endpoint, model, currentJson, rewriteTarget }) {
+async function rewritePromptWithResponses({ apiKey, endpoint, model, format, currentText, rewriteTarget }) {
   const response = await fetchWithTimeout(endpoint, {
     method: "POST",
     headers: getHeaders(apiKey),
@@ -602,12 +632,13 @@ async function rewriteJsonWithResponses({ apiKey, endpoint, model, currentJson, 
           content: [
             {
               type: "input_text",
-              text: getRewritePrompt({ currentJson, rewriteTarget })
+              text: getRewritePrompt({ format, currentText, rewriteTarget })
             }
           ]
         }
       ],
-      max_output_tokens: 2400
+      temperature: 0.1,
+      max_output_tokens: getRewriteMaxTokens(format)
     })
   }, IMAGE_ANALYSIS_TIMEOUT_MS);
 
@@ -615,19 +646,20 @@ async function rewriteJsonWithResponses({ apiKey, endpoint, model, currentJson, 
   return cleanupJsonText(extractResponsesText(payload));
 }
 
-async function rewriteJsonWithChatCompletions({ apiKey, endpoint, model, currentJson, rewriteTarget }) {
+async function rewritePromptWithChatCompletions({ apiKey, endpoint, model, format, currentText, rewriteTarget }) {
   const response = await fetchWithTimeout(endpoint, {
     method: "POST",
     headers: getHeaders(apiKey),
     body: JSON.stringify({
       model,
+      temperature: 0.1,
       messages: [
         {
           role: "user",
-          content: getRewritePrompt({ currentJson, rewriteTarget })
+          content: getRewritePrompt({ format, currentText, rewriteTarget })
         }
       ],
-      max_tokens: 2400
+      max_tokens: getRewriteMaxTokens(format)
     })
   }, IMAGE_ANALYSIS_TIMEOUT_MS);
 
@@ -635,20 +667,21 @@ async function rewriteJsonWithChatCompletions({ apiKey, endpoint, model, current
   return cleanupJsonText(payload?.choices?.[0]?.message?.content || "");
 }
 
-async function rewriteJsonWithAnthropicMessages({ apiKey, endpoint, model, currentJson, rewriteTarget }) {
+async function rewritePromptWithAnthropicMessages({ apiKey, endpoint, model, format, currentText, rewriteTarget }) {
   const response = await fetchWithTimeout(endpoint, {
     method: "POST",
     headers: getAnthropicHeaders(apiKey),
     body: JSON.stringify({
       model,
-      max_tokens: 2400,
+      max_tokens: getRewriteMaxTokens(format),
+      temperature: 0.1,
       messages: [
         {
           role: "user",
           content: [
             {
               type: "text",
-              text: getRewritePrompt({ currentJson, rewriteTarget })
+              text: getRewritePrompt({ format, currentText, rewriteTarget })
             }
           ]
         }
@@ -822,7 +855,8 @@ function isEndpointNotFoundError(error) {
   return error?.status === 404 || /HTTP 404|not found|不存在/i.test(error?.message || "");
 }
 
-async function callResponses({ apiKey, endpoint, model, imageDataUrl }) {
+async function callResponses({ apiKey, endpoint, model, imageDataUrl, outputFormats = DEFAULT_OUTPUT_FORMATS }) {
+  const formats = normalizeOutputFormats(outputFormats);
   const response = await fetchWithTimeout(endpoint, {
     method: "POST",
     headers: getHeaders(apiKey),
@@ -834,24 +868,27 @@ async function callResponses({ apiKey, endpoint, model, imageDataUrl }) {
           content: [
             {
               type: "input_text",
-              text: getPromptText()
+              text: getPromptText(formats)
             },
             {
               type: "input_image",
-              image_url: imageDataUrl
+              image_url: imageDataUrl,
+              detail: "high"
             }
           ]
         }
       ],
-      max_output_tokens: 2400
+      temperature: 0.1,
+      max_output_tokens: getInitialMaxTokens(formats)
     })
   }, IMAGE_ANALYSIS_TIMEOUT_MS);
 
   const payload = await parseJsonResponse(response);
-  return parseAIResponse(extractResponsesText(payload));
+  return parseAIResponse(extractResponsesText(payload), formats);
 }
 
-async function callChatCompletions({ apiKey, endpoint, model, imageDataUrl }) {
+async function callChatCompletions({ apiKey, endpoint, model, imageDataUrl, outputFormats = DEFAULT_OUTPUT_FORMATS }) {
+  const formats = normalizeOutputFormats(outputFormats);
   const response = await fetchWithTimeout(endpoint, {
     method: "POST",
     headers: getHeaders(apiKey),
@@ -871,42 +908,44 @@ async function callChatCompletions({ apiKey, endpoint, model, imageDataUrl }) {
           content: [
             {
               type: "text",
-              text: getPromptText()
+              text: getPromptText(formats)
             },
             {
               type: "image_url",
               image_url: {
                 url: imageDataUrl,
-                detail: "low"
+                detail: "high"
               }
             }
           ]
         }
       ],
-      max_tokens: 2200
+      max_tokens: getInitialMaxTokens(formats)
     })
   }, IMAGE_ANALYSIS_TIMEOUT_MS);
 
   const payload = await parseJsonResponse(response);
   const text = payload?.choices?.[0]?.message?.content || "";
-  return parseAIResponse(text);
+  return parseAIResponse(text, formats);
 }
 
-async function callAnthropicMessages({ apiKey, endpoint, model, imageDataUrl }) {
+async function callAnthropicMessages({ apiKey, endpoint, model, imageDataUrl, outputFormats = DEFAULT_OUTPUT_FORMATS }) {
+  const formats = normalizeOutputFormats(outputFormats);
   const image = parseDataImageUrl(imageDataUrl);
   const response = await fetchWithTimeout(endpoint, {
     method: "POST",
     headers: getAnthropicHeaders(apiKey),
     body: JSON.stringify({
       model,
-      max_tokens: 2200,
+      max_tokens: getInitialMaxTokens(formats),
+      temperature: 0.1,
       messages: [
         {
           role: "user",
           content: [
             {
               type: "text",
-              text: getPromptText()
+              text: getPromptText(formats)
             },
             {
               type: "image",
@@ -923,7 +962,7 @@ async function callAnthropicMessages({ apiKey, endpoint, model, imageDataUrl }) 
   }, IMAGE_ANALYSIS_TIMEOUT_MS);
 
   const payload = await parseJsonResponse(response);
-  return parseAIResponse(extractAnthropicText(payload));
+  return parseAIResponse(extractAnthropicText(payload), formats);
 }
 
 function getHeaders(apiKey) {
@@ -986,6 +1025,21 @@ function cleanupJsonText(text) {
   const trimmed = String(text || "").trim();
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   return (fenced?.[1] || trimmed).trim();
+}
+
+function cleanupPlainText(text) {
+  const cleaned = cleanupJsonText(text).trim();
+  const quoted = cleaned.match(/^"([\s\S]*)"$/);
+  return (quoted ? quoted[1] : cleaned).trim();
+}
+
+function normalizeRewrittenJson(text) {
+  const cleaned = cleanupJsonText(text);
+  try {
+    return JSON.stringify(JSON.parse(cleaned), null, 2);
+  } catch {
+    return cleaned;
+  }
 }
 
 function parseDataImageUrl(dataUrl) {
@@ -1068,60 +1122,108 @@ function normalizeError(error) {
   return message;
 }
 
-function getPromptText() {
+function normalizeOutputFormats(value, options = {}) {
+  const allowDefault = options.allowDefault !== false;
+  const values = Array.isArray(value) ? value : [];
+  const formats = OUTPUT_FORMATS.filter((format) => values.includes(format));
+  return formats.length > 0 ? formats : allowDefault ? DEFAULT_OUTPUT_FORMATS : [];
+}
+
+function getInitialMaxTokens(outputFormats) {
+  const formats = normalizeOutputFormats(outputFormats);
+  const budget = formats.reduce((total, format) => {
+    if (format === "json") return total + 1800;
+    return total + 1300;
+  }, 450);
+  return Math.min(3600, Math.max(1600, budget));
+}
+
+function getPromptText(outputFormats = DEFAULT_OUTPUT_FORMATS) {
+  const formats = normalizeOutputFormats(outputFormats);
+  const fieldRules = [];
+  if (formats.includes("zh")) {
+    fieldRules.push("zh：中文自然语言提示词，适合直接复制到绘图工具。以一段紧凑但细节充分的自然语言覆盖主体、年龄/性别、外貌、表情、姿态、发型、服装、场景、背景、构图、光线、色彩、材质、摄影/绘画风格、镜头/景深、氛围和关键细节。");
+  }
+  if (formats.includes("en")) {
+    fieldRules.push("en：英文自然语言提示词，信息量和 zh 对齐，适合直接复制到英文绘图工具。用紧凑自然的英文覆盖 subject, appearance, expression, pose, hair, clothing, scene, background, composition, lighting, colors, materials, style, camera/lens/depth of field, mood, key details。");
+  }
+  if (formats.includes("json")) {
+    fieldRules.push("json：结构化对象，字段使用 subject, appearance, expression, pose, scene, composition, lighting, style, colors, camera, clothing, hair, accessories, environment, props, materials, mood, key_details, negative_details。字段值尽量使用中文短语、短句或数组，信息要细致、具体、可复现，但不要把同一细节在多个字段里反复展开成完整长句。");
+  }
+
   return [
-    "观察图片，输出一个合法 JSON 对象，不要解释，不要 Markdown。",
-    "JSON 顶层必须包含 zh、en、json 三个字段。",
+    "你是专业的图像反推提示词专家。请仔细观察图片，输出一个高保真、低冗余、可用于尽量复现原图的合法 JSON 对象，不要解释，不要 Markdown。",
+    `JSON 顶层只允许包含这些字段：${formats.join("、")}。不要输出未选择的字段。`,
     [
-      "zh：中文自然语言提示词，适合直接复制到绘图工具。",
-      "en：英文自然语言提示词，含主体、场景、构图、光线、风格、镜头、关键细节。",
-      "json：结构化对象，字段使用 subject, scene, action, composition, lighting, style, colors, camera, clothing, hair, accessories, environment, props, materials, mood, key_details。",
-      "json 字段值尽量使用中文，信息完整但避免重复。"
+      ...fieldRules,
+      "没有看到的内容不要编造，可写空字符串、空数组或“不明显”。",
+      "优先保留能影响复现的视觉细节，删除泛泛而谈的形容词堆叠；允许提示词较长，但必须提高信息密度，避免重复、废话和与图片无关的新设定。"
     ].join("\n")
   ].join("\n");
 }
 
-function parseAIResponse(text) {
+function parseAIResponse(text, outputFormats = DEFAULT_OUTPUT_FORMATS) {
   if (!text) {
     throw new Error("AI 没有返回可解析内容。");
   }
 
+  const formats = normalizeOutputFormats(outputFormats);
   const cleaned = cleanupJsonText(text);
   try {
     const parsed = JSON.parse(cleaned);
-    const jsonValue = parsed?.json_prompt || parsed?.json || parsed;
+    const jsonValue = parsed?.json_prompt || parsed?.json;
     return {
-      zh: String(parsed?.zh || parsed?.chinese || "").trim(),
-      en: String(parsed?.en || parsed?.english || "").trim(),
-      json: typeof jsonValue === "string"
+      zh: formats.includes("zh") ? String(parsed?.zh || parsed?.chinese || "").trim() : "",
+      en: formats.includes("en") ? String(parsed?.en || parsed?.english || "").trim() : "",
+      json: formats.includes("json") && jsonValue ? typeof jsonValue === "string"
         ? cleanupJsonText(jsonValue)
-        : JSON.stringify(jsonValue || {}, null, 2),
+        : JSON.stringify(jsonValue, null, 2) : "",
       raw: text
     };
   } catch {
+    if (formats.length === 1) {
+      return {
+        zh: formats[0] === "zh" ? cleaned : "",
+        en: formats[0] === "en" ? cleaned : "",
+        json: formats[0] === "json" ? cleanupJsonText(cleaned) : "",
+        raw: text
+      };
+    }
+
     return {
-      zh: extractSection(text, "中文提示词", "英文提示词"),
-      en: extractSection(text, "英文提示词", "JSON 格式的关键词标签"),
-      json: cleanupJsonText(extractSection(text, "JSON 格式的关键词标签") || text || "{}"),
+      zh: formats.includes("zh") ? extractSection(text, "中文提示词", "英文提示词") : "",
+      en: formats.includes("en") ? extractSection(text, "英文提示词", "JSON 格式的关键词标签") : "",
+      json: formats.includes("json") ? cleanupJsonText(extractSection(text, "JSON 格式的关键词标签") || text || "") : "",
       raw: text
     };
   }
 }
 
-function getRewritePrompt({ currentJson, rewriteTarget }) {
+function normalizePromptFormat(format) {
+  return ["zh", "en", "json"].includes(format) ? format : "zh";
+}
+
+function getRewriteMaxTokens(format) {
+  return format === "json" ? 2200 : 1400;
+}
+
+function getRewritePrompt({ format, currentText, rewriteTarget }) {
+  const formatLabel = format === "en" ? "英文自然语言提示词" : format === "json" ? "JSON 结构化提示词" : "中文自然语言提示词";
+  const outputRule = format === "json"
+    ? "只输出调整后的合法 JSON 对象，不要输出 zh/en 包装字段，不要解释，不要 Markdown。"
+    : `只输出调整后的${formatLabel}正文，不要输出 JSON，不要解释，不要 Markdown。`;
+
   return [
     "你是专业的 AI 绘画提示词局部编辑助手。",
-    "根据用户的调整目标，对当前提示词做最小必要修改，并输出一个合法 JSON 对象，不要解释，不要 Markdown。",
-    "顶层必须包含 zh、en、json 三个字段。",
-    "必须尽量保留原 zh、en、json 的表达顺序、字段结构、详细程度和未被要求修改的信息。",
+    `当前正在编辑的是：${formatLabel}。`,
+    "根据用户的调整目标，对当前提示词做最小必要修改。",
+    outputRule,
+    "必须尽量保留原文本的表达顺序、结构、详细程度和未被要求修改的信息。",
     "只修改用户明确要求的内容，以及与该修改直接冲突、必须同步修正的少量细节。",
-    "不要重写整段提示词，不要主动补充新设定，不要把简短提示词扩写成长提示词。",
+    "不要重写整段提示词，不要改变原来的写法风格，不要主动补充新设定，不要把提示词扩写成另一种格式。",
     "如果用户只要求替换主体属性，例如性别、年龄、服装或背景，只替换对应属性，并保留构图、光线、风格、镜头、氛围等原有描述。",
-    "zh：中文自然语言提示词，尽量沿用原中文句式。",
-    "en：英文自然语言提示词，尽量沿用原英文句式。",
-    "json：结构化对象，保持原 JSON 字段结构和字段值风格。",
     `用户调整目标：${rewriteTarget}`,
-    "当前 JSON：",
-    currentJson
+    "当前提示词：",
+    currentText
   ].join("\n");
 }

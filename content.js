@@ -196,8 +196,9 @@
     const resultTexts = {
       zh: result?.zh || "",
       en: result?.en || "",
-      json: formatJsonText(result?.json || "{}")
+      json: result?.json ? formatJsonText(result.json) : ""
     };
+    const activeMode = getFirstResultMode(resultTexts);
 
     const panel = createShell(point, `
       <section class="ript-card ript-result-card">
@@ -209,11 +210,11 @@
           <button class="ript-close" type="button" aria-label="关闭">×</button>
         </div>
         <div class="ript-result-tabs" role="tablist" aria-label="提示词格式">
-          <button class="is-active" type="button" data-ript-result-tab="zh">中文</button>
-          <button type="button" data-ript-result-tab="en">English</button>
-          <button type="button" data-ript-result-tab="json">JSON</button>
+          <button class="${activeMode === "zh" ? "is-active" : ""}" type="button" data-ript-result-tab="zh"${resultTexts.zh ? "" : " disabled title=\"未生成中文\""}>中文</button>
+          <button class="${activeMode === "en" ? "is-active" : ""}" type="button" data-ript-result-tab="en"${resultTexts.en ? "" : " disabled title=\"未生成英文\""}>English</button>
+          <button class="${activeMode === "json" ? "is-active" : ""}" type="button" data-ript-result-tab="json"${resultTexts.json ? "" : " disabled title=\"未生成 JSON\""}>JSON</button>
         </div>
-        <textarea class="ript-result-text" data-ript-active-text data-ript-active-mode="zh" spellcheck="false">${escapeHtml(resultTexts.zh || resultTexts.json)}</textarea>
+        <textarea class="ript-result-text" data-ript-active-text data-ript-active-mode="${activeMode}" spellcheck="false">${escapeHtml(resultTexts[activeMode] || "")}</textarea>
         <div class="ript-rewrite">
           <input data-ript-rewrite-input type="text" placeholder="输入调整目标，例如：改为男孩、更换背景、修改服装">
           <button class="ript-secondary" type="button" data-ript-rewrite>同步调整</button>
@@ -327,6 +328,9 @@
 
     root.querySelectorAll("[data-ript-result-tab]").forEach((tab) => {
       tab.addEventListener("click", () => {
+        if (tab.disabled) return;
+        const previousMode = textarea.dataset.riptActiveMode || "zh";
+        resultTexts[previousMode] = previousMode === "json" ? formatJsonText(textarea.value) : textarea.value;
         const mode = tab.dataset.riptResultTab || "json";
         root.querySelectorAll("[data-ript-result-tab]").forEach((item) => {
           item.classList.toggle("is-active", item === tab);
@@ -366,6 +370,10 @@
     bindRewriteControls(root, textarea, resultTexts);
   }
 
+  function getFirstResultMode(resultTexts) {
+    return resultTexts.zh ? "zh" : resultTexts.en ? "en" : resultTexts.json ? "json" : "zh";
+  }
+
   function bindRewriteControls(root, textarea, resultTexts) {
     const input = root.querySelector("[data-ript-rewrite-input]");
     const button = root.querySelector("[data-ript-rewrite]");
@@ -386,14 +394,17 @@
       textarea.disabled = true;
       button.classList.add("is-loading");
       button.textContent = "调整中";
-      setRewriteStatus(status, "正在同步调整 JSON 描述。", false);
+      const activeMode = textarea.dataset.riptActiveMode || "zh";
+      resultTexts[activeMode] = activeMode === "json" ? formatJsonText(textarea.value) : textarea.value;
+      setRewriteStatus(status, "正在调整当前格式。", false);
       startRewriteProgress(root);
 
       let response;
       try {
         response = await chrome.runtime.sendMessage({
           type: "RIPT_REWRITE_JSON_PROMPT",
-          currentJson: resultTexts.json || textarea.value,
+          format: activeMode,
+          currentText: resultTexts[activeMode] || textarea.value,
           rewriteTarget
         });
       } catch (error) {
@@ -419,13 +430,14 @@
         return;
       }
 
-      resultTexts.zh = response.zh || resultTexts.zh;
-      resultTexts.en = response.en || resultTexts.en;
-      resultTexts.json = formatJsonText(response.json || resultTexts.json || textarea.value);
-      const activeMode = textarea.dataset.riptActiveMode || "json";
-      textarea.value = resultTexts[activeMode] || resultTexts.json;
+      if (activeMode === "json") {
+        resultTexts.json = formatJsonText(response.text || resultTexts.json || textarea.value);
+      } else {
+        resultTexts[activeMode] = response.text || resultTexts[activeMode] || textarea.value;
+      }
+      textarea.value = resultTexts[activeMode] || "";
       finishRewriteProgress(root, "ok");
-      setRewriteStatus(status, "已同步调整。", false);
+      setRewriteStatus(status, "已调整当前格式。", false);
     });
   }
 
@@ -1123,6 +1135,12 @@
       .ript-result-tabs button:hover {
         transform: translateY(-1px);
         background: rgba(31, 41, 55, 0.82);
+      }
+
+      .ript-result-tabs button:disabled {
+        cursor: default;
+        opacity: 0.42;
+        transform: none;
       }
 
       .ript-result-tabs button.is-active {

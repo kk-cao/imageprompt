@@ -5,17 +5,21 @@ const STORAGE_KEYS = {
   provider: "ript_provider",
   history: "ript_history",
   historyLimit: "ript_history_limit",
+  outputFormats: "ript_output_formats",
   historyMigrated: "ript_history_indexeddb_migrated"
 };
 
 const DEFAULT_API_URL = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL = "gpt-4o";
 const DEFAULT_HISTORY_LIMIT = 100;
+const OUTPUT_FORMATS = ["zh", "en", "json"];
+const DEFAULT_OUTPUT_FORMATS = [...OUTPUT_FORMATS];
 
 const apiUrlInput = document.querySelector("#apiUrl");
 const apiKeyInput = document.querySelector("#apiKey");
 const modelInput = document.querySelector("#modelName");
 const historyLimitInput = document.querySelector("#historyLimit");
+const outputFormatInputs = Array.from(document.querySelectorAll(".ript-popup__format-options input[type='checkbox']"));
 const statusEl = document.querySelector("#status");
 const saveButton = document.querySelector("#saveKey");
 const clearButton = document.querySelector("#clearKey");
@@ -61,6 +65,7 @@ async function initPopup() {
   apiKeyInput.value = settings.apiKey || "";
   modelInput.value = settings.model || DEFAULT_MODEL;
   historyLimitInput.value = String(await getHistoryLimit());
+  setOutputFormatInputs(settings.outputFormats);
   setStatus(settings.apiKey && settings.apiUrl && settings.model
     ? "已绑定，可通过图片右键菜单使用。"
     : "请填写 API URL、API Key 和模型名称。");
@@ -88,7 +93,9 @@ saveButton.addEventListener("click", async () => {
   const apiKey = apiKeyInput.value.trim();
   const model = modelInput.value.trim();
   const historyLimit = parseHistoryLimitInput();
+  const outputFormats = parseOutputFormatsInput();
   if (historyLimit === null) return;
+  if (outputFormats === null) return;
 
   if (!apiUrl || !apiKey || !model) {
     setStatus("API URL、API Key 和模型名称都需要填写。", true);
@@ -108,11 +115,13 @@ saveButton.addEventListener("click", async () => {
   let response;
   try {
     await saveHistoryLimit(historyLimit);
+    await saveOutputFormats(outputFormats);
     response = await chrome.runtime.sendMessage({
       type: "RIPT_TEST_SAVE_BINDING",
       apiUrl,
       apiKey,
-      model
+      model,
+      outputFormats
     });
   } catch (error) {
     saveButton.disabled = false;
@@ -139,12 +148,14 @@ clearButton.addEventListener("click", async () => {
     STORAGE_KEYS.apiKey,
     STORAGE_KEYS.apiUrl,
     STORAGE_KEYS.model,
-    STORAGE_KEYS.provider
+    STORAGE_KEYS.provider,
+    STORAGE_KEYS.outputFormats
   ]);
   await chrome.storage.local.remove(STORAGE_KEYS.apiKey);
   apiUrlInput.value = DEFAULT_API_URL;
   apiKeyInput.value = "";
   modelInput.value = DEFAULT_MODEL;
+  setOutputFormatInputs(DEFAULT_OUTPUT_FORMATS);
   setStatus("已清除绑定。");
 });
 
@@ -263,6 +274,7 @@ document.addEventListener("keydown", (event) => {
 
 historyDetail.querySelectorAll("[data-detail-tab]").forEach((tab) => {
   tab.addEventListener("click", () => {
+    if (tab.disabled) return;
     setHistoryDetailMode(tab.dataset.detailTab || "json");
   });
 });
@@ -295,12 +307,14 @@ historyRewriteButton.addEventListener("click", async () => {
   historyRewriteButton.textContent = "调整中";
   setHistoryRewriteStatus("正在同步调整提示词。", false);
   activeDetailTexts[activeDetailMode] = historyDetailText.value || activeDetailTexts[activeDetailMode] || "";
+  const rewriteMode = activeDetailMode;
 
   let response;
   try {
     response = await chrome.runtime.sendMessage({
       type: "RIPT_REWRITE_JSON_PROMPT",
-      currentJson: activeDetailTexts.json || historyDetailText.value,
+      format: rewriteMode,
+      currentText: activeDetailTexts[rewriteMode] || historyDetailText.value,
       rewriteTarget
     });
   } catch (error) {
@@ -316,15 +330,16 @@ historyRewriteButton.addEventListener("click", async () => {
     return;
   }
 
-  activeDetailTexts = {
-    zh: response.zh || activeDetailTexts.zh,
-    en: response.en || activeDetailTexts.en,
-    json: formatJsonText(response.json || activeDetailTexts.json || "{}")
-  };
-  historyDetailText.value = activeDetailTexts[activeDetailMode] || activeDetailTexts.json;
+  const rewrittenText = response.text || "";
+  if (rewriteMode === "json") {
+    activeDetailTexts.json = formatJsonText(rewrittenText || activeDetailTexts.json || "{}");
+  } else {
+    activeDetailTexts[rewriteMode] = rewrittenText || activeDetailTexts[rewriteMode] || "";
+  }
+  historyDetailText.value = activeDetailTexts[activeDetailMode] || "";
   await updateHistoryEntry(activeHistoryId, activeDetailTexts);
   historyRewriteInput.value = "";
-  setHistoryRewriteStatus("已同步调整并保存到历史。", false);
+  setHistoryRewriteStatus("已调整当前格式并保存到历史。", false);
   await render();
 });
 
@@ -363,10 +378,11 @@ function renderHistory(history) {
 
   const visibleHistory = viewMode === "history" ? history : history.slice(0, 5);
   historyList.innerHTML = visibleHistory.map((item) => {
-    const json = formatJsonText(item.json || "{}");
-    const summary = item.zh || item.en || getHistorySummary(json);
+    const json = item.json ? formatJsonText(item.json) : "";
+    const summary = item.zh || item.en || (json ? getHistorySummary(json) : "未生成可复制内容");
     const zhDisabled = item.zh ? "" : " disabled";
     const enDisabled = item.en ? "" : " disabled";
+    const jsonDisabled = json ? "" : " disabled";
     return `
       <article class="ript-history-item" data-history-id="${escapeHtml(item.id)}">
         <button class="ript-history-item__image" type="button" data-action="open" aria-label="查看历史详情">
@@ -383,7 +399,7 @@ function renderHistory(history) {
           <div class="ript-history-item__actions">
             <button type="button" data-action="copy" data-copy-mode="zh"${zhDisabled}>中文</button>
             <button type="button" data-action="copy" data-copy-mode="en"${enDisabled}>英文</button>
-            <button type="button" data-action="copy" data-copy-mode="json">JSON</button>
+            <button type="button" data-action="copy" data-copy-mode="json"${jsonDisabled}>JSON</button>
             <button type="button" data-action="delete">删除</button>
           </div>
         </div>
@@ -400,9 +416,9 @@ async function openHistoryDetail(id) {
   activeDetailTexts = {
     zh: entry.zh || "",
     en: entry.en || "",
-    json: formatJsonText(entry.json || "{}")
+    json: entry.json ? formatJsonText(entry.json) : ""
   };
-  activeDetailMode = activeDetailTexts.zh ? "zh" : activeDetailTexts.en ? "en" : "json";
+  activeDetailMode = getFirstAvailableDetailMode(activeDetailTexts);
 
   historyDetailMeta.textContent = `${formatDate(entry.createdAt)}${entry.model ? ` · ${entry.model}` : ""}`;
   historyDetailImage.innerHTML = entry.image
@@ -426,15 +442,31 @@ function closeHistoryDetail() {
 }
 
 function setHistoryDetailMode(mode, saveCurrent = true) {
+  if (!hasDetailText(mode)) return;
   if (saveCurrent) {
     activeDetailTexts[activeDetailMode] = historyDetailText.value || activeDetailTexts[activeDetailMode] || "";
   }
   activeDetailMode = mode;
   historyDetail.querySelectorAll("[data-detail-tab]").forEach((tab) => {
-    tab.classList.toggle("is-active", tab.dataset.detailTab === mode);
+    const tabMode = tab.dataset.detailTab || "zh";
+    const available = hasDetailText(tabMode);
+    tab.disabled = !available;
+    tab.title = available ? "" : "该记录未生成此格式";
+    tab.classList.toggle("is-active", tabMode === mode);
   });
   historyDetailText.value = activeDetailTexts[mode] || "";
+  historyRewriteButton.disabled = !historyDetailText.value;
+  historyRewriteInput.disabled = !historyDetailText.value;
+  copyHistoryDetailButton.disabled = !historyDetailText.value;
   copyHistoryDetailButton.textContent = mode === "json" ? "复制 JSON" : mode === "en" ? "复制英文" : "复制中文";
+}
+
+function getFirstAvailableDetailMode(texts) {
+  return texts.zh ? "zh" : texts.en ? "en" : texts.json ? "json" : "zh";
+}
+
+function hasDetailText(mode) {
+  return Boolean(activeDetailTexts[mode]);
 }
 
 function restoreHistoryRewriteControls() {
@@ -454,13 +486,13 @@ async function updateHistoryEntry(id, texts) {
   await RiptHistoryStore.update(id, {
     zh: texts.zh || "",
     en: texts.en || "",
-    json: texts.json || "{}"
+    json: texts.json || ""
   });
 }
 
 function getHistoryTextByMode(entry, mode) {
   if (mode === "en") return entry.en || "";
-  if (mode === "json") return formatJsonText(entry.json || "{}");
+  if (mode === "json") return entry.json ? formatJsonText(entry.json) : "";
   return entry.zh || "";
 }
 
@@ -476,7 +508,8 @@ async function getPopupSettings() {
   const syncSettings = await chrome.storage.sync.get([
     STORAGE_KEYS.apiKey,
     STORAGE_KEYS.apiUrl,
-    STORAGE_KEYS.model
+    STORAGE_KEYS.model,
+    STORAGE_KEYS.outputFormats
   ]);
   const localSettings = await chrome.storage.local.get(STORAGE_KEYS.apiKey);
   const legacySyncApiKey = syncSettings[STORAGE_KEYS.apiKey];
@@ -492,8 +525,41 @@ async function getPopupSettings() {
   return {
     apiKey: localApiKey || legacySyncApiKey || "",
     apiUrl: syncSettings[STORAGE_KEYS.apiUrl] || "",
-    model: syncSettings[STORAGE_KEYS.model] || DEFAULT_MODEL
+    model: syncSettings[STORAGE_KEYS.model] || DEFAULT_MODEL,
+    outputFormats: normalizeOutputFormats(syncSettings[STORAGE_KEYS.outputFormats])
   };
+}
+
+function setOutputFormatInputs(formats) {
+  const selected = new Set(normalizeOutputFormats(formats));
+  outputFormatInputs.forEach((input) => {
+    input.checked = selected.has(input.value);
+  });
+}
+
+function parseOutputFormatsInput() {
+  const selected = outputFormatInputs
+    .filter((input) => input.checked)
+    .map((input) => input.value);
+  const formats = normalizeOutputFormats(selected, { allowDefault: false });
+  if (formats.length === 0) {
+    setStatus("至少需要选择一种生成格式。", true);
+    return null;
+  }
+  return formats;
+}
+
+async function saveOutputFormats(formats) {
+  await chrome.storage.sync.set({
+    [STORAGE_KEYS.outputFormats]: normalizeOutputFormats(formats)
+  });
+}
+
+function normalizeOutputFormats(value, options = {}) {
+  const allowDefault = options.allowDefault !== false;
+  const values = Array.isArray(value) ? value : [];
+  const formats = OUTPUT_FORMATS.filter((format) => values.includes(format));
+  return formats.length > 0 ? formats : allowDefault ? DEFAULT_OUTPUT_FORMATS : [];
 }
 
 async function getAllHistory() {

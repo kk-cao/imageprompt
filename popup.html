@@ -45,6 +45,16 @@
           <input id="historyLimit" type="number" min="0" step="1" autocomplete="off" placeholder="0 表示不主动限制" />
         </label>
 
+        <fieldset class="ript-popup__format-field" aria-describedby="outputFormatsHint">
+          <legend>生成格式</legend>
+          <div class="ript-popup__format-options">
+            <label><input id="outputZh" type="checkbox" value="zh"> 中文</label>
+            <label><input id="outputEn" type="checkbox" value="en"> English</label>
+            <label><input id="outputJson" type="checkbox" value="json"> JSON</label>
+          </div>
+          <p id="outputFormatsHint">选择越多，首次生成越慢，也会消耗更多 token。</p>
+        </fieldset>
+
         <div class="ript-popup__actions">
           <button id="saveKey" type="button">检测并绑定</button>
           <button id="clearKey" type="button">清除</button>

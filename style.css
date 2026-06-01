@@ -158,6 +158,56 @@ html.is-detail-open .ript-popup-body {
   box-shadow: 0 0 0 3px rgba(124, 255, 58, 0.12);
 }
 
+.ript-popup__format-field {
+  margin: 14px 0 0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  padding: 11px 12px 10px;
+  background: rgba(15, 23, 42, 0.54);
+}
+
+.ript-popup__format-field legend {
+  padding: 0 4px;
+  color: #e5e7eb;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ript-popup__format-options {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.ript-popup__format-options label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  color: #cbd5e1;
+  background: rgba(2, 6, 23, 0.36);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ript-popup__format-options input {
+  width: 14px;
+  height: 14px;
+  accent-color: #7cff3a;
+}
+
+.ript-popup__format-field p {
+  margin: 9px 0 0;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .ript-popup__actions {
   display: grid;
   grid-template-columns: 1fr 88px;
@@ -561,6 +611,12 @@ html.is-detail-open .ript-popup-body {
 .ript-history-detail__rewrite button:hover,
 .ript-history-detail__footer button:hover {
   transform: translateY(-1px);
+}
+
+.ript-history-detail__tabs button:disabled {
+  cursor: default;
+  opacity: 0.42;
+  transform: none;
 }
 
 .ript-history-detail__tabs button.is-active,
