@@ -411,6 +411,7 @@ async function openHistoryDetail(id) {
   historyRewriteInput.value = "";
   setHistoryRewriteStatus("", false);
   historyDetail.hidden = false;
+  document.documentElement.classList.add("is-detail-open");
   document.body.classList.add("is-detail-open");
   setHistoryDetailMode(activeDetailMode, false);
   historyDetailText.focus();
@@ -419,6 +420,7 @@ async function openHistoryDetail(id) {
 function closeHistoryDetail() {
   activeHistoryId = "";
   historyDetail.hidden = true;
+  document.documentElement.classList.remove("is-detail-open");
   document.body.classList.remove("is-detail-open");
   restoreHistoryRewriteControls();
 }
