@@ -12,24 +12,42 @@
   let progressStartTime = 0;
   let dragState = null;
   let currentImagePreview = "";
+  let activeHoverImage = null;
+  let hoverButtonHideTimer = null;
+  let hoverButtonPointerInside = false;
 
   document.addEventListener("contextmenu", (event) => {
     if (event.target instanceof HTMLImageElement) {
-      const rect = event.target.getBoundingClientRect();
-      lastPoint = clampPoint({
+      rememberImageTarget(event.target, {
         x: event.clientX,
         y: event.clientY
       });
-      lastImageRect = {
-        left: rect.left,
-        top: rect.top,
-        right: rect.right,
-        bottom: rect.bottom,
-        width: rect.width,
-        height: rect.height
-      };
     }
   }, true);
+
+  document.addEventListener("pointerover", (event) => {
+    const image = event.target instanceof HTMLImageElement ? event.target : null;
+    if (!image || !isUsableImage(image)) return;
+    showHoverButton(image);
+  }, true);
+
+  document.addEventListener("pointermove", (event) => {
+    if (!(event.target instanceof HTMLImageElement) || event.target !== activeHoverImage) return;
+    positionHoverButton(event.target);
+  }, true);
+
+  document.addEventListener("pointerout", (event) => {
+    if (event.target !== activeHoverImage) return;
+    scheduleHoverButtonHide();
+  }, true);
+
+  window.addEventListener("scroll", () => {
+    if (activeHoverImage && isUsableImage(activeHoverImage)) {
+      positionHoverButton(activeHoverImage);
+    }
+  }, true);
+
+  window.addEventListener("resize", hideHoverButton);
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "RIPT_PING") {
@@ -102,6 +120,128 @@
     shadow.appendChild(style);
 
     return shadow;
+  }
+
+  function showHoverButton(image) {
+    activeHoverImage = image;
+    rememberImageTarget(image);
+    const root = ensureShadow();
+    let button = root.querySelector(".ript-hover-button");
+    if (!button) {
+      button = document.createElement("button");
+      button.className = "ript-hover-button";
+      button.type = "button";
+      button.textContent = "反推";
+      button.title = "反推图片提示词";
+      button.addEventListener("pointerenter", () => {
+        hoverButtonPointerInside = true;
+        clearHoverButtonHideTimer();
+      });
+      button.addEventListener("pointerleave", () => {
+        hoverButtonPointerInside = false;
+        scheduleHoverButtonHide();
+      });
+      button.addEventListener("click", handleHoverButtonClick);
+      root.appendChild(button);
+    }
+    button.hidden = false;
+    positionHoverButton(image);
+  }
+
+  function positionHoverButton(image) {
+    const root = ensureShadow();
+    const button = root.querySelector(".ript-hover-button");
+    if (!button || !isUsableImage(image)) {
+      hideHoverButton();
+      return;
+    }
+
+    const rect = image.getBoundingClientRect();
+    const left = Math.round(Math.max(8, Math.min(rect.right - 52, window.innerWidth - 62)));
+    const top = Math.round(Math.max(8, Math.min(rect.top + 8, window.innerHeight - 38)));
+    button.style.left = `${left}px`;
+    button.style.top = `${top}px`;
+  }
+
+  async function handleHoverButtonClick(event) {
+    if (!event.isTrusted || !activeHoverImage) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const image = activeHoverImage;
+    const srcUrl = getImageSource(image);
+    if (!srcUrl) return;
+
+    rememberImageTarget(image);
+    currentImagePreview = srcUrl;
+    hideHoverButton();
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "RIPT_ANALYZE_IMAGE",
+        srcUrl,
+        point: getPreferredPanelPoint()
+      });
+      if (!response?.ok) {
+        showError(response?.message || "无法开始反推。", getPreferredPanelPoint(), srcUrl);
+      }
+    } catch (error) {
+      showError(error?.message || "无法开始反推。", getPreferredPanelPoint(), srcUrl);
+    }
+  }
+
+  function scheduleHoverButtonHide() {
+    clearHoverButtonHideTimer();
+    hoverButtonHideTimer = window.setTimeout(() => {
+      if (!hoverButtonPointerInside) hideHoverButton();
+    }, 180);
+  }
+
+  function clearHoverButtonHideTimer() {
+    if (!hoverButtonHideTimer) return;
+    window.clearTimeout(hoverButtonHideTimer);
+    hoverButtonHideTimer = null;
+  }
+
+  function hideHoverButton() {
+    clearHoverButtonHideTimer();
+    const button = shadow?.querySelector(".ript-hover-button");
+    if (button) button.hidden = true;
+    hoverButtonPointerInside = false;
+    activeHoverImage = null;
+  }
+
+  function rememberImageTarget(image, point = null) {
+    const rect = image.getBoundingClientRect();
+    lastPoint = clampPoint(point || {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2
+    });
+    lastImageRect = {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      width: rect.width,
+      height: rect.height
+    };
+  }
+
+  function getPreferredPanelPoint() {
+    if (!lastImageRect) return lastPoint;
+    return clampPoint({
+      x: lastImageRect.left + lastImageRect.width / 2,
+      y: lastImageRect.top + Math.min(lastImageRect.height / 2, 160)
+    });
+  }
+
+  function isUsableImage(image) {
+    const rect = image.getBoundingClientRect();
+    return rect.width >= 80 && rect.height >= 80 && Boolean(getImageSource(image));
+  }
+
+  function getImageSource(image) {
+    return image.currentSrc || image.src || image.getAttribute("src") || "";
   }
 
   function showProgress({ point, percent, label, imagePreview }) {
@@ -714,6 +854,7 @@
     return `
       :host {
         all: initial;
+        pointer-events: none;
       }
 
       .ript-panel,
@@ -749,9 +890,50 @@
         background: transparent;
       }
 
+      .ript-hover-button {
+        position: fixed;
+        z-index: 2147483647;
+        pointer-events: auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 28px;
+        border: 1px solid rgba(255, 255, 255, 0.34);
+        border-radius: 999px;
+        color: rgba(248, 250, 252, 0.94);
+        background: rgba(15, 23, 42, 0.48);
+        box-shadow: 0 8px 22px rgba(2, 6, 23, 0.2);
+        backdrop-filter: blur(10px) saturate(1.12);
+        -webkit-backdrop-filter: blur(10px) saturate(1.12);
+        cursor: pointer;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: 0;
+        opacity: 0.72;
+        transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease, transform 140ms ease;
+      }
+
+      .ript-hover-button:hover,
+      .ript-hover-button:focus-visible {
+        border-color: rgba(124, 255, 58, 0.76);
+        color: #07110a;
+        background: rgba(124, 255, 58, 0.9);
+        opacity: 1;
+        outline: none;
+        transform: translateY(-1px);
+      }
+
+      .ript-hover-button[hidden] {
+        display: none;
+      }
+
       .ript-panel {
         position: fixed;
         z-index: 2147483647;
+        pointer-events: auto;
         width: min(520px, calc(100vw - 24px));
         color: #f8fafc;
         transform-origin: top center;
