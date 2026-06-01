@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>图片反推提示词</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body class="ript-popup-body">
+    <main class="ript-popup">
+      <header class="ript-popup__header">
+        <div class="ript-popup__title-row">
+          <div>
+            <h1>图片反推提示词</h1>
+            <p>悬浮网页图片即可反推提示词。</p>
+          </div>
+          <button id="openSettings" class="ript-popup__icon-button" type="button">设置</button>
+        </div>
+      </header>
+
+      <section class="ript-popup__settings" aria-labelledby="settingsTitle">
+        <div class="ript-popup__history-head">
+          <h2 id="settingsTitle">API 设置</h2>
+          <button id="backToMain" type="button">返回</button>
+        </div>
+
+        <label class="ript-popup__field">
+          <span>API URL</span>
+          <input id="apiUrl" type="url" autocomplete="off" placeholder="OpenAI: /v1/chat/completions；Claude: /v1/messages" />
+        </label>
+
+        <label class="ript-popup__field">
+          <span>API Key</span>
+          <input id="apiKey" type="password" autocomplete="off" placeholder="sk-..." />
+        </label>
+
+        <label class="ript-popup__field">
+          <span>视觉模型名称</span>
+          <input id="modelName" type="text" autocomplete="off" placeholder="例如：gpt-4o / claude-opus-4-7" />
+        </label>
+
+        <div class="ript-popup__actions">
+          <button id="saveKey" type="button">检测并绑定</button>
+          <button id="clearKey" type="button">清除</button>
+        </div>
+
+        <p id="status" class="ript-popup__status" role="status"></p>
+      </section>
+
+      <section class="ript-popup__history" aria-labelledby="historyTitle">
+        <div class="ript-popup__history-head">
+          <h2 id="historyTitle">历史记录</h2>
+          <div class="ript-popup__history-actions">
+            <button id="viewAllHistory" type="button">查看全部</button>
+            <button id="clearHistory" type="button">清空</button>
+          </div>
+        </div>
+        <div id="historyList" class="ript-popup__history-list"></div>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
