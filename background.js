@@ -1,17 +1,20 @@
+importScripts("history-db.js");
+
 const MENU_ID = "reverse-image-prompt";
 const STORAGE_KEYS = {
   apiKey: "ript_api_key",
   apiUrl: "ript_api_url",
   model: "ript_model",
   provider: "ript_provider",
-  history: "ript_history"
+  history: "ript_history",
+  historyLimit: "ript_history_limit"
 };
 
 const DEFAULT_API_URL = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL = "gpt-4o";
+const DEFAULT_HISTORY_LIMIT = 100;
 const CONNECTION_TEST_TIMEOUT_MS = 20000;
 const IMAGE_ANALYSIS_TIMEOUT_MS = 90000;
-const HISTORY_LIMIT = 50;
 const pendingRequests = new Map();
 
 chrome.runtime.onInstalled.addListener(setupContextMenu);
@@ -94,15 +97,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function handleJsonRewrite(message) {
-  const settings = await chrome.storage.sync.get([
-    STORAGE_KEYS.apiKey,
-    STORAGE_KEYS.apiUrl,
-    STORAGE_KEYS.model
-  ]);
-
-  const apiKey = settings[STORAGE_KEYS.apiKey];
-  const apiUrl = settings[STORAGE_KEYS.apiUrl];
-  const model = settings[STORAGE_KEYS.model] || DEFAULT_MODEL;
+  const { apiKey, apiUrl, model } = await getApiSettings();
   const currentJson = String(message.currentJson || "").trim();
   const rewriteTarget = String(message.rewriteTarget || "").trim();
 
@@ -140,21 +135,14 @@ async function startReverseImageFlow({ tabId, srcUrl, point }) {
     createdAt: Date.now()
   });
 
-  const settings = await chrome.storage.sync.get([
-    STORAGE_KEYS.apiKey,
-    STORAGE_KEYS.apiUrl,
-    STORAGE_KEYS.model
-  ]);
-
-  const apiKey = settings[STORAGE_KEYS.apiKey];
-  const apiUrl = settings[STORAGE_KEYS.apiUrl];
-  const model = settings[STORAGE_KEYS.model] || DEFAULT_MODEL;
+  const { apiKey, apiUrl, model } = await getApiSettings();
 
   if (!apiKey || !apiUrl || !model) {
     await sendToTab(tabId, {
       type: "RIPT_SHOW_BINDING",
       apiUrl: apiUrl || DEFAULT_API_URL,
       model,
+      imagePreview: srcUrl,
       point
     });
     return;
@@ -184,10 +172,15 @@ async function handleBindingMessage(message, sender) {
 
   await chrome.storage.sync.set({
     [STORAGE_KEYS.apiUrl]: workingEndpoint,
-    [STORAGE_KEYS.apiKey]: apiKey,
     [STORAGE_KEYS.model]: model
   });
-  await chrome.storage.sync.remove(STORAGE_KEYS.provider);
+  await chrome.storage.local.set({
+    [STORAGE_KEYS.apiKey]: apiKey
+  });
+  await chrome.storage.sync.remove([
+    STORAGE_KEYS.apiKey,
+    STORAGE_KEYS.provider
+  ]);
 
   if (message.type === "RIPT_TEST_SAVE_BINDING") {
     return {
@@ -222,6 +215,30 @@ async function handleBindingMessage(message, sender) {
   });
 
   return { ok: true };
+}
+
+async function getApiSettings() {
+  const syncSettings = await chrome.storage.sync.get([
+    STORAGE_KEYS.apiKey,
+    STORAGE_KEYS.apiUrl,
+    STORAGE_KEYS.model
+  ]);
+  const localSettings = await chrome.storage.local.get(STORAGE_KEYS.apiKey);
+  const legacySyncApiKey = syncSettings[STORAGE_KEYS.apiKey];
+  const localApiKey = localSettings[STORAGE_KEYS.apiKey];
+
+  if (!localApiKey && legacySyncApiKey) {
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.apiKey]: legacySyncApiKey
+    });
+    await chrome.storage.sync.remove(STORAGE_KEYS.apiKey);
+  }
+
+  return {
+    apiKey: localApiKey || legacySyncApiKey || "",
+    apiUrl: syncSettings[STORAGE_KEYS.apiUrl] || "",
+    model: syncSettings[STORAGE_KEYS.model] || DEFAULT_MODEL
+  };
 }
 
 async function testApiConnection({ apiKey, apiUrl, model }) {
@@ -281,12 +298,14 @@ async function resolveWorkingEndpoint({ apiKey, endpoint, model, imageDataUrl, t
 }
 
 async function analyzeImage({ tabId, requestId, srcUrl, point, apiKey, apiUrl, model }) {
-  await sendProgress(tabId, point, 8, "准备读取图片");
+  let imagePreview = srcUrl;
   try {
-    await sendProgress(tabId, point, 22, "正在转换图片");
+    await sendProgress(tabId, point, 8, "准备读取图片", imagePreview);
+    await sendProgress(tabId, point, 22, "正在转换图片", imagePreview);
     const imageDataUrl = await imageUrlToDataUrl(srcUrl);
+    imagePreview = await createHistoryThumbnail(imageDataUrl, 360).catch(() => srcUrl);
 
-    await sendProgress(tabId, point, 58, "正在请求 AI 分析");
+    await sendProgress(tabId, point, 58, "正在请求 AI 分析", imagePreview);
     const result = await reverseImagePrompt({
       apiKey,
       apiUrl,
@@ -294,7 +313,7 @@ async function analyzeImage({ tabId, requestId, srcUrl, point, apiKey, apiUrl, m
       imageDataUrl
     });
 
-    await sendProgress(tabId, point, 92, "正在整理结果");
+    await sendProgress(tabId, point, 92, "正在整理结果", imagePreview);
     await saveHistoryItem({
       srcUrl,
       model,
@@ -305,6 +324,7 @@ async function analyzeImage({ tabId, requestId, srcUrl, point, apiKey, apiUrl, m
     await sendToTab(tabId, {
       type: "RIPT_SHOW_RESULT",
       result,
+      imagePreview,
       point
     });
   } catch (error) {
@@ -312,6 +332,7 @@ async function analyzeImage({ tabId, requestId, srcUrl, point, apiKey, apiUrl, m
     await sendToTab(tabId, {
       type: "RIPT_SHOW_ERROR",
       message: normalizeError(error),
+      imagePreview,
       point
     });
   } finally {
@@ -320,7 +341,7 @@ async function analyzeImage({ tabId, requestId, srcUrl, point, apiKey, apiUrl, m
 }
 
 function createRequestId() {
-  if (crypto?.randomUUID) return crypto.randomUUID();
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
@@ -350,22 +371,18 @@ async function sendToTab(tabId, message) {
   return chrome.tabs.sendMessage(tabId, message);
 }
 
-async function sendProgress(tabId, point, percent, label) {
+async function sendProgress(tabId, point, percent, label, imagePreview = "") {
   await sendToTab(tabId, {
     type: "RIPT_SHOW_PROGRESS",
     percent,
     label,
+    imagePreview,
     point
   });
 }
 
 async function saveHistoryItem({ srcUrl, model, result, imageDataUrl }) {
   const image = await createHistoryThumbnail(imageDataUrl).catch(() => "");
-  const settings = await chrome.storage.local.get(STORAGE_KEYS.history);
-  const history = Array.isArray(settings[STORAGE_KEYS.history])
-    ? settings[STORAGE_KEYS.history]
-    : [];
-
   const item = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     createdAt: Date.now(),
@@ -377,25 +394,17 @@ async function saveHistoryItem({ srcUrl, model, result, imageDataUrl }) {
     json: result?.json || "{}"
   };
 
-  await setHistoryWithQuotaFallback([item, ...history]);
+  await saveHistoryWithFallback(item);
 }
 
-async function setHistoryWithQuotaFallback(history) {
-  const attempts = [
-    history.slice(0, HISTORY_LIMIT),
-    history.slice(0, Math.ceil(HISTORY_LIMIT / 2)),
-    history.slice(0, Math.ceil(HISTORY_LIMIT / 2)).map((item) => ({
-      ...item,
-      image: ""
-    }))
-  ];
-
+async function saveHistoryWithFallback(item) {
+  const attempts = [item, { ...item, image: "" }];
   let lastError = null;
-  for (const nextHistory of attempts) {
+
+  for (const nextItem of attempts) {
     try {
-      await chrome.storage.local.set({
-        [STORAGE_KEYS.history]: nextHistory
-      });
+      await RiptHistoryStore.put(nextItem);
+      await RiptHistoryStore.enforceLimit(await getHistoryLimit());
       return;
     } catch (error) {
       lastError = error;
@@ -405,13 +414,18 @@ async function setHistoryWithQuotaFallback(history) {
   throw lastError || new Error("History save failed.");
 }
 
-async function createHistoryThumbnail(imageDataUrl) {
+async function getHistoryLimit() {
+  const settings = await chrome.storage.local.get(STORAGE_KEYS.historyLimit);
+  const limit = Number(settings[STORAGE_KEYS.historyLimit]);
+  return Number.isFinite(limit) ? limit : DEFAULT_HISTORY_LIMIT;
+}
+
+async function createHistoryThumbnail(imageDataUrl, maxSide = 144) {
   if (!imageDataUrl) return "";
 
   const response = await fetch(imageDataUrl);
   const blob = await response.blob();
   const bitmap = await createImageBitmap(blob);
-  const maxSide = 144;
   const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
   const width = Math.max(1, Math.round(bitmap.width * scale));
   const height = Math.max(1, Math.round(bitmap.height * scale));

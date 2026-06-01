@@ -12,7 +12,8 @@
         <div class="ript-popup__title-row">
           <div>
             <h1>图片反推提示词</h1>
-            <p>悬浮网页图片即可反推提示词。</p>
+            <p>右键网页图片即可反推提示词。</p>
+            <span id="extensionVersion" class="ript-popup__version"></span>
           </div>
           <button id="openSettings" class="ript-popup__icon-button" type="button">设置</button>
         </div>
@@ -39,6 +40,11 @@
           <input id="modelName" type="text" autocomplete="off" placeholder="例如：gpt-4o / claude-opus-4-7" />
         </label>
 
+        <label class="ript-popup__field">
+          <span>最大历史数量</span>
+          <input id="historyLimit" type="number" min="0" step="1" autocomplete="off" placeholder="0 表示不主动限制" />
+        </label>
+
         <div class="ript-popup__actions">
           <button id="saveKey" type="button">检测并绑定</button>
           <button id="clearKey" type="button">清除</button>
@@ -51,13 +57,48 @@
         <div class="ript-popup__history-head">
           <h2 id="historyTitle">历史记录</h2>
           <div class="ript-popup__history-actions">
+            <button id="importHistory" type="button">导入</button>
+            <button id="exportHistory" type="button">导出</button>
             <button id="viewAllHistory" type="button">查看全部</button>
             <button id="clearHistory" type="button">清空</button>
           </div>
         </div>
         <div id="historyList" class="ript-popup__history-list"></div>
+        <input id="importHistoryFile" type="file" accept="application/json,.json" hidden>
       </section>
     </main>
+    <section id="historyDetail" class="ript-history-detail" aria-labelledby="historyDetailTitle" aria-modal="true" role="dialog" hidden>
+      <div class="ript-history-detail__panel">
+        <header class="ript-history-detail__header">
+          <div>
+            <h2 id="historyDetailTitle">历史详情</h2>
+            <p id="historyDetailMeta"></p>
+          </div>
+          <button id="closeHistoryDetail" class="ript-history-detail__close" type="button" aria-label="关闭">×</button>
+        </header>
+
+        <div id="historyDetailImage" class="ript-history-detail__image"></div>
+
+        <div class="ript-history-detail__tabs" role="tablist" aria-label="提示词格式">
+          <button class="is-active" type="button" data-detail-tab="zh">中文</button>
+          <button type="button" data-detail-tab="en">English</button>
+          <button type="button" data-detail-tab="json">JSON</button>
+        </div>
+
+        <textarea id="historyDetailText" class="ript-history-detail__text" spellcheck="false"></textarea>
+
+        <div class="ript-history-detail__rewrite">
+          <input id="historyRewriteInput" type="text" placeholder="输入调整目标，例如：改为男孩、更换背景、修改服装">
+          <button id="historyRewriteButton" type="button">同步调整</button>
+        </div>
+        <p id="historyRewriteStatus" class="ript-history-detail__status" role="status"></p>
+
+        <footer class="ript-history-detail__footer">
+          <button id="copyHistoryDetail" type="button">复制当前</button>
+        </footer>
+      </div>
+    </section>
+    <script src="history-db.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

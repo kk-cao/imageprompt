@@ -11,10 +11,7 @@
   let rewriteProgressTimer = null;
   let progressStartTime = 0;
   let dragState = null;
-  let hoverMenuImage = null;
-  let hoverMenu = null;
-  let hiddenHoverImage = null;
-  let hoverHideTimer = null;
+  let currentImagePreview = "";
 
   document.addEventListener("contextmenu", (event) => {
     if (event.target instanceof HTMLImageElement) {
@@ -31,31 +28,6 @@
         width: rect.width,
         height: rect.height
       };
-    }
-  }, true);
-
-  document.addEventListener("pointerover", (event) => {
-    const image = getImageTarget(event.target);
-    if (!image || image === hiddenHoverImage || !isUsableHoverImage(image)) return;
-    showImageHoverMenu(image);
-  }, true);
-
-  document.addEventListener("pointerout", (event) => {
-    const image = getImageTarget(event.target);
-    if (!image) return;
-    if (image === hiddenHoverImage) {
-      const related = event.relatedTarget;
-      if (!related || !image.contains(related)) hiddenHoverImage = null;
-    }
-    if (image !== hoverMenuImage) return;
-    const related = event.relatedTarget;
-    if (related && (image.contains(related) || hoverMenu?.contains(related))) return;
-    scheduleHoverMenuHide();
-  }, true);
-
-  document.addEventListener("scroll", () => {
-    if (hoverMenuImage && hoverMenu) {
-      positionHoverMenu(hoverMenuImage, hoverMenu);
     }
   }, true);
 
@@ -77,11 +49,16 @@
       lastPoint = clampPoint(message.point);
     }
 
+    if (message?.imagePreview) {
+      currentImagePreview = String(message.imagePreview || "");
+    }
+
     if (message?.type === "RIPT_SHOW_LOADING" || message?.type === "RIPT_SHOW_PROGRESS") {
       showProgress({
         point: lastPoint,
         percent: message.percent || 12,
-        label: message.label || "正在反推提示词"
+        label: message.label || "正在反推提示词",
+        imagePreview: currentImagePreview
       });
     }
 
@@ -89,16 +66,17 @@
       showBinding({
         point: lastPoint,
         apiUrl: message.apiUrl || "https://api.openai.com/v1/responses",
-        model: message.model || "gpt-4o"
+        model: message.model || "gpt-4o",
+        imagePreview: currentImagePreview
       });
     }
 
     if (message?.type === "RIPT_SHOW_RESULT") {
-      showResult(message.result, lastPoint);
+      showResult(message.result, lastPoint, currentImagePreview);
     }
 
     if (message?.type === "RIPT_SHOW_ERROR") {
-      showError(message.message || "处理失败，请稍后重试。", lastPoint);
+      showError(message.message || "处理失败，请稍后重试。", lastPoint, currentImagePreview);
     }
 
     return false;
@@ -126,103 +104,7 @@
     return shadow;
   }
 
-  function getImageTarget(target) {
-    return target instanceof HTMLImageElement ? target : null;
-  }
-
-  function isUsableHoverImage(image) {
-    const rect = image.getBoundingClientRect();
-    return rect.width >= 80 && rect.height >= 80 && image.currentSrc;
-  }
-
-  function showImageHoverMenu(image) {
-    const root = ensureShadow();
-    window.clearTimeout(hoverHideTimer);
-    hoverMenuImage = image;
-
-    if (!hoverMenu) {
-      hoverMenu = document.createElement("div");
-      hoverMenu.className = "ript-hover-menu";
-      hoverMenu.innerHTML = `
-        <button type="button" data-ript-hover-action="analyze">反推提示词</button>
-        <button type="button" data-ript-hover-action="hide" aria-label="关闭悬浮菜单">×</button>
-      `;
-      root.appendChild(hoverMenu);
-      bindHoverMenu();
-    }
-
-    hoverMenu.hidden = false;
-    positionHoverMenu(image, hoverMenu);
-  }
-
-  function bindHoverMenu() {
-    hoverMenu.addEventListener("pointerenter", () => {
-      window.clearTimeout(hoverHideTimer);
-    });
-
-    hoverMenu.addEventListener("pointerleave", scheduleHoverMenuHide);
-
-    hoverMenu.addEventListener("click", async (event) => {
-      if (!event.isTrusted) return;
-
-      const button = event.target.closest("button");
-      const action = button?.dataset?.riptHoverAction;
-      if (!action || !hoverMenuImage) return;
-
-      if (action === "hide") {
-        hiddenHoverImage = hoverMenuImage;
-        hideHoverMenu();
-        return;
-      }
-
-      if (action === "analyze") {
-        const rect = hoverMenuImage.getBoundingClientRect();
-        lastPoint = clampPoint({
-          x: rect.left + rect.width / 2,
-          y: rect.top + Math.min(rect.height, 96)
-        });
-        lastImageRect = {
-          left: rect.left,
-          top: rect.top,
-          right: rect.right,
-          bottom: rect.bottom,
-          width: rect.width,
-          height: rect.height
-        };
-        const srcUrl = hoverMenuImage.currentSrc || hoverMenuImage.src;
-        hideHoverMenu();
-        await chrome.runtime.sendMessage({
-          type: "RIPT_ANALYZE_IMAGE",
-          srcUrl,
-          point: lastPoint
-        });
-      }
-    });
-  }
-
-  function positionHoverMenu(image, menu) {
-    const rect = image.getBoundingClientRect();
-    const top = Math.max(8, rect.top + 10);
-    const left = Math.min(window.innerWidth - 176, Math.max(8, rect.right - 168));
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-  }
-
-  function scheduleHoverMenuHide() {
-    window.clearTimeout(hoverHideTimer);
-    hoverHideTimer = window.setTimeout(() => {
-      if (hiddenHoverImage === hoverMenuImage) hiddenHoverImage = null;
-      hideHoverMenu();
-    }, 160);
-  }
-
-  function hideHoverMenu() {
-    window.clearTimeout(hoverHideTimer);
-    if (hoverMenu) hoverMenu.hidden = true;
-    hoverMenuImage = null;
-  }
-
-  function showProgress({ point, percent, label }) {
+  function showProgress({ point, percent, label, imagePreview }) {
     const root = ensureShadow();
     let panel = root.querySelector(".ript-panel");
 
@@ -243,11 +125,12 @@
           </div>
           <p class="ript-progress-label" data-ript-progress-label>${escapeHtml(label)}</p>
         </section>
-      `);
+      `, imagePreview);
       root.appendChild(panel);
       startVisualProgress(root);
     }
 
+    updatePreview(root, imagePreview);
     updateProgressLabel(root, label);
     if (percent >= 90) {
       visualProgress = Math.max(visualProgress, 90);
@@ -257,7 +140,7 @@
     bindDrag(root);
   }
 
-  function showBinding({ point, apiUrl, model }) {
+  function showBinding({ point, apiUrl, model, imagePreview }) {
     const root = ensureShadow();
     stopVisualProgress();
     root.querySelector(".ript-panel")?.remove();
@@ -283,13 +166,13 @@
         <p class="ript-status" data-ript-bind-status></p>
         <button class="ript-primary" type="button" data-ript-bind-save>检测并开始</button>
       </section>
-    `));
+    `, imagePreview));
     bindClose(root);
     bindInlineSave(root);
     bindDrag(root);
   }
 
-  function showError(message, point) {
+  function showError(message, point, imagePreview) {
     const root = ensureShadow();
     stopVisualProgress();
     root.querySelector(".ript-panel")?.remove();
@@ -301,12 +184,12 @@
         </div>
         <p class="ript-error">${escapeHtml(message)}</p>
       </section>
-    `));
+    `, imagePreview));
     bindClose(root);
     bindDrag(root);
   }
 
-  function showResult(result, point) {
+  function showResult(result, point, imagePreview) {
     const root = ensureShadow();
     root.querySelector(".ript-panel")?.remove();
 
@@ -343,21 +226,42 @@
           <button class="ript-copy-main" type="button" data-ript-copy-active>复制</button>
         </footer>
       </section>
-    `);
+    `, imagePreview);
 
     root.appendChild(panel);
     bindClose(root);
     bindResultControls(root, resultTexts);
     bindDrag(root);
   }
-  function createShell(point, html) {
+  function createShell(point, html, imagePreview = "") {
     const wrapper = document.createElement("div");
     wrapper.className = "ript-panel";
-    const position = getPanelPosition(point);
+    const hasPreview = Boolean(imagePreview);
+    const position = getPanelPosition(point, hasPreview);
     wrapper.style.left = `${position.left}px`;
     wrapper.style.top = `${position.top}px`;
-    wrapper.innerHTML = html;
+    wrapper.innerHTML = hasPreview
+      ? `<div class="ript-panel-layout">${html}${createPreviewHtml(imagePreview)}</div>`
+      : html;
     return wrapper;
+  }
+
+  function createPreviewHtml(imagePreview) {
+    return `
+      <aside class="ript-preview-card" aria-label="当前反推图片">
+        <div class="ript-preview-card__head">当前图片</div>
+        <div class="ript-preview-card__image">
+          <img src="${escapeAttribute(imagePreview)}" alt="">
+        </div>
+      </aside>
+    `;
+  }
+
+  function updatePreview(root, imagePreview) {
+    const image = root.querySelector(".ript-preview-card img");
+    if (image && imagePreview && image.src !== imagePreview) {
+      image.src = imagePreview;
+    }
   }
 
   function bindClose(root) {
@@ -595,7 +499,8 @@
       showProgress({
         point: lastPoint,
         percent: 0,
-        label: "准备读取图片"
+        label: "准备读取图片",
+        imagePreview: currentImagePreview
       });
     });
   }
@@ -711,8 +616,8 @@
     status.dataset.state = isError ? "error" : "ok";
   }
 
-  function getPanelPosition(point) {
-    const width = Math.min(520, window.innerWidth - 24);
+  function getPanelPosition(point, hasPreview = false) {
+    const width = Math.min(hasPreview ? 720 : 520, window.innerWidth - 24);
     const estimatedHeight = 620;
     return {
       left: Math.max(12, Math.round((window.innerWidth - width) / 2)),
@@ -749,6 +654,10 @@
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
+  }
+
+  function escapeAttribute(value) {
+    return escapeHtml(value).replace(/'/g, "&#39;");
   }
 
   function isHttpsUrl(value) {
@@ -796,8 +705,6 @@
       }
 
       .ript-panel,
-      .ript-hover-menu,
-      .ript-hover-menu *,
       .ript-panel * {
         box-sizing: border-box;
         font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -839,67 +746,50 @@
         animation: ript-panel-in 180ms cubic-bezier(0.2, 0.85, 0.2, 1) both;
       }
 
-      .ript-hover-menu {
-        position: fixed;
-        z-index: 2147483647;
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        min-height: 36px;
-        padding: 5px;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        border-radius: 999px;
+      .ript-panel:has(.ript-preview-card) {
+        width: min(720px, calc(100vw - 24px));
+      }
+
+      .ript-panel-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 172px;
+        align-items: start;
+        gap: 12px;
+      }
+
+      .ript-preview-card {
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 20px;
         color: #f8fafc;
-        background: rgba(17, 24, 39, 0.9);
-        box-shadow: 0 14px 34px rgba(0, 0, 0, 0.32);
-        backdrop-filter: blur(22px) saturate(1.24);
-        -webkit-backdrop-filter: blur(22px) saturate(1.24);
-        animation: ript-panel-in 140ms cubic-bezier(0.2, 0.85, 0.2, 1) both;
+        background: rgba(17, 24, 39, 0.86);
+        box-shadow: 0 22px 54px rgba(0, 0, 0, 0.24);
+        backdrop-filter: blur(36px) saturate(1.28);
+        -webkit-backdrop-filter: blur(36px) saturate(1.28);
       }
 
-      .ript-hover-menu[hidden] {
-        display: none;
-      }
-
-      .ript-hover-menu button {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        height: 26px;
-        border: 0;
-        border-radius: 999px;
-        cursor: pointer;
+      .ript-preview-card__head {
+        padding: 12px 12px 8px;
+        color: #cbd5e1;
         font-size: 12px;
         font-weight: 700;
-        line-height: 1;
-        transition: background 140ms ease, color 140ms ease, transform 140ms ease;
+        line-height: 1.3;
       }
 
-      .ript-hover-menu button[data-ript-hover-action="analyze"] {
-        min-width: 86px;
-        padding: 0 12px;
-        color: #07110a;
-        background: #7cff3a;
+      .ript-preview-card__image {
+        display: grid;
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        place-items: center;
+        overflow: hidden;
+        background: rgba(2, 6, 23, 0.42);
       }
 
-      .ript-hover-menu button[data-ript-hover-action="hide"] {
-        width: 26px;
-        color: #e5e7eb;
-        background: rgba(255, 255, 255, 0.1);
-        font-size: 18px;
-        font-weight: 500;
-      }
-
-      .ript-hover-menu button:hover {
-        transform: translateY(-1px);
-      }
-
-      .ript-hover-menu button[data-ript-hover-action="analyze"]:hover {
-        background: #9aff66;
-      }
-
-      .ript-hover-menu button[data-ript-hover-action="hide"]:hover {
-        background: rgba(255, 255, 255, 0.18);
+      .ript-preview-card__image img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
       }
 
       .ript-panel.is-closing {
@@ -929,8 +819,12 @@
         }
       }
 
-      .ript-panel:has(.ript-card--loading) {
+      .ript-panel:has(.ript-card--loading):not(:has(.ript-preview-card)) {
         width: min(360px, calc(100vw - 24px));
+      }
+
+      .ript-panel:has(.ript-card--loading):has(.ript-preview-card) {
+        width: min(548px, calc(100vw - 24px));
       }
 
       .ript-card {
@@ -1411,6 +1305,23 @@
       }
 
       @media (max-width: 520px) {
+        .ript-panel:has(.ript-preview-card) {
+          width: min(520px, calc(100vw - 24px));
+        }
+
+        .ript-panel-layout {
+          grid-template-columns: 1fr;
+        }
+
+        .ript-preview-card {
+          order: -1;
+        }
+
+        .ript-preview-card__image {
+          aspect-ratio: 16 / 9;
+          max-height: 180px;
+        }
+
         .ript-rewrite {
           grid-template-columns: 1fr;
         }
