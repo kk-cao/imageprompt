@@ -15,6 +15,8 @@
   let activeHoverImage = null;
   let hoverButtonHideTimer = null;
   let hoverButtonPointerInside = false;
+  let currentPointerX = 0;
+  let currentPointerY = 0;
 
   document.addEventListener("contextmenu", (event) => {
     if (event.target instanceof HTMLImageElement) {
@@ -32,6 +34,8 @@
   }, true);
 
   document.addEventListener("pointermove", (event) => {
+    currentPointerX = event.clientX;
+    currentPointerY = event.clientY;
     if (!(event.target instanceof HTMLImageElement) || event.target !== activeHoverImage) return;
     positionHoverButton(event.target);
   }, true);
@@ -193,7 +197,19 @@
   function scheduleHoverButtonHide() {
     clearHoverButtonHideTimer();
     hoverButtonHideTimer = window.setTimeout(() => {
-      if (!hoverButtonPointerInside) hideHoverButton();
+      if (hoverButtonPointerInside) return;
+      // 检查鼠标是否仍在图片区域内（防止 Pinterest 等站点动态插入遮罩层导致 pointerout 误触发）
+      if (activeHoverImage) {
+        const rect = activeHoverImage.getBoundingClientRect();
+        if (
+          currentPointerX >= rect.left && currentPointerX <= rect.right &&
+          currentPointerY >= rect.top  && currentPointerY <= rect.bottom
+        ) {
+          scheduleHoverButtonHide();
+          return;
+        }
+      }
+      hideHoverButton();
     }, 180);
   }
 
