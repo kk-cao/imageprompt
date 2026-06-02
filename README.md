@@ -1,6 +1,6 @@
 # 图片反推提示词
 
-![版本](https://img.shields.io/badge/version-0.1-7cff3a?labelColor=111827)
+![版本](https://img.shields.io/badge/version-0.2-7cff3a?labelColor=111827)
 ![Manifest V3](https://img.shields.io/badge/Chrome%20Extension-MV3-94a3b8?labelColor=111827)
 
 一个 Chrome / Edge 浏览器插件：右键网页图片，调用支持视觉输入的 AI 接口，反推出中文提示词、英文提示词和 JSON 结构化描述。
