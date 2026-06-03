@@ -11,7 +11,19 @@
   <img src="icons/icon128.png" width="96" height="96" alt="图片反推提示词图标">
 </p>
 
-![工作流示意图](docs/workflow.svg)
+## 软件界面预览
+
+### 设置页面
+
+![设置页面](docs/setting.png)
+
+### 加载扩展
+
+![加载扩展](docs/load.png)
+
+### 反推结果
+
+![反推结果](docs/result.png)
 
 ## 功能
 
