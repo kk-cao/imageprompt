@@ -161,8 +161,10 @@
     }
 
     const rect = image.getBoundingClientRect();
-    const left = Math.round(Math.max(8, Math.min(rect.right - 52, window.innerWidth - 62)));
-    const top = Math.round(Math.max(8, Math.min(rect.top + 8, window.innerHeight - 38)));
+    const buttonWidth = button.offsetWidth || 44;
+    const buttonHeight = button.offsetHeight || 30;
+    const left = Math.round(Math.max(8, Math.min(rect.left + 8, window.innerWidth - buttonWidth - 8)));
+    const top = Math.round(Math.max(8, Math.min(rect.top + 8, window.innerHeight - buttonHeight - 8)));
     button.style.left = `${left}px`;
     button.style.top = `${top}px`;
   }
